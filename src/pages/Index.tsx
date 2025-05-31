@@ -8,6 +8,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Heart, Users, Shield, Clock, RefreshCw, Send, Copy, Check } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
+import { supabase } from "@/integrations/supabase/client";
 
 // Types
 interface Session {
@@ -46,14 +47,39 @@ const Index = () => {
   };
 
   // Join as Partner 2
-  const joinAsPartner2 = () => {
+  const joinAsPartner2 = async () => {
     if (inputSessionCode.length !== 6) {
       setError('Please enter a valid 6-character session code');
       return;
     }
-    setSessionCode(inputSessionCode.toUpperCase());
-    setCurrentView('partner2-form');
+
+    setLoading(true);
     setError('');
+
+    try {
+      const { data: existingSession, error: fetchError } = await supabase
+        .from('sessions')
+        .select('*')
+        .eq('session_code', inputSessionCode.toUpperCase())
+        .single();
+
+      if (fetchError || !existingSession) {
+        setError('Session not found. Please check the code and try again.');
+        return;
+      }
+
+      if (existingSession.partner2_perspective) {
+        setError('This session is already complete.');
+        return;
+      }
+
+      setSessionCode(inputSessionCode.toUpperCase());
+      setCurrentView('partner2-form');
+    } catch (err) {
+      setError('Failed to join session. Please try again.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   // Copy session code to clipboard
@@ -75,7 +101,7 @@ const Index = () => {
     }
   };
 
-  // Submit perspective (simulated - in real app would use Supabase)
+  // Submit perspective
   const submitPerspective = async (isPartner1: boolean) => {
     if (!perspective.trim()) {
       setError('Please share your perspective');
@@ -86,79 +112,105 @@ const Index = () => {
     setError('');
 
     try {
-      // Simulate API call delay
-      await new Promise(resolve => setTimeout(resolve, 1000));
-
-      const newSession: Session = {
-        session_code: sessionCode,
-        ...(isPartner1 ? {
-          partner1_name: partnerName || 'Partner 1',
-          partner1_perspective: perspective
-        } : {
-          partner2_name: partnerName || 'Partner 2',
-          partner2_perspective: perspective
-        })
+      const updateData = isPartner1 ? {
+        partner1_name: partnerName || 'Partner 1',
+        partner1_perspective: perspective
+      } : {
+        partner2_name: partnerName || 'Partner 2',
+        partner2_perspective: perspective
       };
 
-      setSession(newSession);
-
       if (isPartner1) {
+        // Create new session for Partner 1
+        const { data: newSession, error: insertError } = await supabase
+          .from('sessions')
+          .insert([{ session_code: sessionCode, ...updateData }])
+          .select()
+          .single();
+
+        if (insertError) throw insertError;
+        setSession(newSession);
         setCurrentView('waiting');
+        
+        toast({
+          title: "Perspective submitted",
+          description: "Waiting for your partner to join..."
+        });
       } else {
-        // Simulate both partners submitted - generate solution
-        generateSolution();
+        // Update existing session for Partner 2
+        const { data: updatedSession, error: updateError } = await supabase
+          .from('sessions')
+          .update(updateData)
+          .eq('session_code', sessionCode)
+          .select()
+          .single();
+
+        if (updateError) throw updateError;
+        setSession(updatedSession);
+        
+        // Both partners have submitted, generate solution
+        await generateSolution();
       }
 
-      toast({
-        title: "Perspective submitted",
-        description: isPartner1 ? "Waiting for your partner..." : "Generating solution..."
-      });
-
     } catch (err) {
+      console.error('Error submitting perspective:', err);
       setError('Failed to submit perspective. Please try again.');
     } finally {
       setLoading(false);
     }
   };
 
-  // Generate AI solution (simulated)
+  // Generate AI solution
   const generateSolution = async () => {
     setLoading(true);
     try {
-      // Simulate AI processing
-      await new Promise(resolve => setTimeout(resolve, 2000));
-
-      const mockSolution = `Thank you both for sharing your perspectives openly. 
-
-**Summary of Both Viewpoints:**
-Partner 1 feels heard and understood, seeking connection and resolution. Partner 2 also values communication and wants to find common ground.
-
-**Common Ground:**
-Both partners care deeply about your relationship and want to resolve this constructively.
-
-**Suggested Steps for Resolution:**
-1. **Take 5 minutes** each to listen without interrupting
-2. **Use "I" statements** when expressing feelings
-3. **Find one small action** each person can take today
-4. **Schedule a follow-up** conversation in 24 hours
-5. **Practice gratitude** by sharing one thing you appreciate about each other
-
-Remember: Healthy relationships require ongoing effort from both partners. Consider this a step forward in your journey together.`;
-
-      setSession(prev => prev ? { ...prev, solution: mockSolution } : null);
-      setCurrentView('solution');
-
-      toast({
-        title: "Solution generated",
-        description: "Your personalized mediation is ready"
+      const { data, error } = await supabase.functions.invoke('generate-solution', {
+        body: { sessionCode }
       });
 
+      if (error) throw error;
+
+      if (data?.solution) {
+        setSession(prev => prev ? { ...prev, solution: data.solution } : null);
+        setCurrentView('solution');
+        
+        toast({
+          title: "Solution generated",
+          description: "Your personalized mediation is ready"
+        });
+      }
     } catch (err) {
+      console.error('Error generating solution:', err);
       setError('Failed to generate solution. Please try again.');
     } finally {
       setLoading(false);
     }
   };
+
+  // Poll for partner 2 submission when waiting
+  useEffect(() => {
+    if (currentView === 'waiting') {
+      const interval = setInterval(async () => {
+        try {
+          const { data: updatedSession } = await supabase
+            .from('sessions')
+            .select('*')
+            .eq('session_code', sessionCode)
+            .single();
+
+          if (updatedSession?.partner2_perspective) {
+            setSession(updatedSession);
+            clearInterval(interval);
+            await generateSolution();
+          }
+        } catch (err) {
+          console.error('Error polling for updates:', err);
+        }
+      }, 3000);
+
+      return () => clearInterval(interval);
+    }
+  }, [currentView, sessionCode]);
 
   // Start over
   const startOver = () => {
@@ -220,8 +272,19 @@ Remember: Healthy relationships require ongoing effort from both partners. Consi
                     maxLength={6}
                     className="text-center font-mono text-lg"
                   />
-                  <Button onClick={joinAsPartner2} className="w-full bg-pink-500 hover:bg-pink-600">
-                    Join Session
+                  <Button 
+                    onClick={joinAsPartner2} 
+                    disabled={loading}
+                    className="w-full bg-pink-500 hover:bg-pink-600"
+                  >
+                    {loading ? (
+                      <>
+                        <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                        Joining...
+                      </>
+                    ) : (
+                      'Join Session'
+                    )}
                   </Button>
                 </CardContent>
               </Card>
