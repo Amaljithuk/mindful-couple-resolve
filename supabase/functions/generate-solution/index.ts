@@ -58,7 +58,7 @@ serve(async (req) => {
       )
     }
 
-    // Prepare the prompt for xAI Grok
+    // Prepare the prompt for Google Gemini
     const prompt = `You are an expert relationship counselor and mediator. Two partners in a relationship have shared their perspectives about a conflict. Please provide a thoughtful, balanced mediation response that helps them understand each other and find resolution.
 
 Partner 1 (${session.partner1_name || 'Partner 1'}): "${session.partner1_perspective}"
@@ -74,50 +74,48 @@ Please provide a response that:
 
 Format your response as a thoughtful mediation that both partners can read together.`
 
-    // Call xAI Grok API
-    const xaiApiKey = Deno.env.get('XAI_API_KEY')
-    if (!xaiApiKey) {
+    // Call Google Gemini API
+    const geminiApiKey = Deno.env.get('GOOGLE_AI_API_KEY')
+    if (!geminiApiKey) {
       return new Response(
         JSON.stringify({ error: 'AI service not configured' }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       )
     }
 
-    const xaiResponse = await fetch('https://api.x.ai/v1/chat/completions', {
+    const geminiResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${geminiApiKey}`, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${xaiApiKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        messages: [
-          {
-            role: 'system',
-            content: 'You are a professional relationship counselor and mediator. Provide thoughtful, balanced advice that helps couples understand each other and resolve conflicts constructively.'
-          },
-          {
-            role: 'user',
-            content: prompt
-          }
-        ],
-        model: 'grok-beta',
-        stream: false,
-        temperature: 0.7
+        contents: [{
+          parts: [{
+            text: prompt
+          }]
+        }],
+        generationConfig: {
+          temperature: 0.7,
+          topK: 40,
+          topP: 0.95,
+          maxOutputTokens: 2048,
+        }
       })
     })
 
-    if (!xaiResponse.ok) {
-      console.error('xAI API error:', await xaiResponse.text())
+    if (!geminiResponse.ok) {
+      console.error('Gemini API error:', await geminiResponse.text())
       return new Response(
         JSON.stringify({ error: 'Failed to generate solution' }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       )
     }
 
-    const xaiData = await xaiResponse.json()
-    const solution = xaiData.choices[0]?.message?.content
+    const geminiData = await geminiResponse.json()
+    const solution = geminiData.candidates?.[0]?.content?.parts?.[0]?.text
 
     if (!solution) {
+      console.error('No solution generated from Gemini:', geminiData)
       return new Response(
         JSON.stringify({ error: 'No solution generated' }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
