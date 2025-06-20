@@ -258,4 +258,4 @@ This is a personal project, but feedback and suggestions are welcome! Open an is
 
 ---
 
-Built with ❤️ for healthier relationships
+Built with ❤️ for healthier relationships.
